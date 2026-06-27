@@ -281,7 +281,7 @@ client.on('interactionCreate', async interaction => {
                 'I remember our conversation in each channel so I can give you better answers over time! 🧠✨'
             )
             .addFields(
-                { name: '🤖 Powered by', value: 'Anthropic Claude',    inline: true },
+                { name: '🤖 Powered by', value: 'Google Gemini',    inline: true },
                 { name: '💬 Commands',   value: '`/say` `/addstaff`',   inline: true },
                 { name: '🌸 Personality', value: 'Friendly & helpful',  inline: true },
             )
