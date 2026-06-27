@@ -33,7 +33,7 @@ const DATA_FILE = path.join(__dirname, 'ai-bot-data.json');
 
 // Gemini API settings (free tier!)
 const GEMINI_KEY   = process.env.GEMINI_KEY || '';
-const GEMINI_MODEL = 'gemini-1.5-flash'; // Free + fast
+const GEMINI_MODEL = 'gemini-2.0-flash'; // Free + fast
 
 // How many messages to keep in per-channel memory (rolling context)
 const MEMORY_DEPTH = 20;
