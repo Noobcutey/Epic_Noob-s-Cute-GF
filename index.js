@@ -4,9 +4,11 @@
  * This version uses Google Gemini (generativelanguage API) instead of Anthropic.
  *
  * SETUP (.env):
- *   TOKEN     — Your bot's Discord token
- *   GEMINI_KEY— Your Google Gemini API key
- *   OWNER_ID  — Your Discord user ID (optional)
+ *   TOKEN             — Your bot's Discord token
+ *   GEMINI_KEY        — Your Google Gemini API key
+ *   GEMINI_MODEL      — Preferred Gemini model (default gemini-2.0-flash)
+ *   GEMINI_FALLBACK_MODEL — Optional fallback model if preferred model is unavailable
+ *   OWNER_ID          — Your Discord user ID (optional)
  */
 
 require('dotenv').config();
@@ -32,8 +34,9 @@ const OWNER_ID  = process.env.OWNER_ID  || '1340069836096667859';
 const DATA_FILE = path.join(__dirname, 'ai-bot-data.json');
 
 // Gemini API settings (free tier!)
-const GEMINI_KEY   = process.env.GEMINI_KEY || '';
-const GEMINI_MODEL = 'gemini-2.0-flash'; // Free + fast (falls back to 1.5 if quota errors)
+const GEMINI_KEY            = process.env.GEMINI_KEY || '';
+const GEMINI_MODEL          = process.env.GEMINI_MODEL || 'gemini-2.0-flash'; // Preferred model
+const GEMINI_FALLBACK_MODEL = process.env.GEMINI_FALLBACK_MODEL || 'gemini-1.5-flash'; // Optional fallback
 
 // How many messages to keep in per-channel memory (rolling context)
 const MEMORY_DEPTH = 20;
@@ -120,13 +123,13 @@ async function askAI(channelId, userMessage, username) {
         parts: [{ text: m.content }],
     }));
 
-    // Try with preferred model, fallback to gemini-1.5-flash on quota errors
+    // Try preferred model first, optionally fallback to GEMINI_FALLBACK_MODEL
     let model = GEMINI_MODEL;
-    const tried = new Set();
+    const triedModels = new Set();
 
     for (let attempt = 0; attempt < 3; attempt++) {
-        if (tried.has(model)) break;
-        tried.add(model);
+        if (triedModels.has(model)) break;
+        triedModels.add(model);
 
         try {
             const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_KEY}`;
@@ -149,40 +152,46 @@ async function askAI(channelId, userMessage, username) {
                 return reply;
             }
 
-            // Not OK — examine error body
             const bodyText = await response.text().catch(() => '');
             let bodyJson = null;
             try { bodyJson = JSON.parse(bodyText); } catch (_) { /* ignore */ }
 
-            // Handle quota / 429 specifically: try fallback model if available
             const status = response.status;
+
+            // If the model is not found (404), return a clear message
+            if (status === 404) {
+                console.error(`Gemini model ${model} not found or not supported for generateContent (404).`);
+                const details = bodyJson?.error?.message || bodyText || 'Model not found.';
+                return `⚠️ Model ${model} is not available for this API method. ${details} Please check the model name or API version, or set GEMINI_MODEL/GEMINI_FALLBACK_MODEL to a supported model.`;
+            }
+
             const isQuotaError = status === 429
-                || (bodyJson && bodyJson.error && bodyJson.error.code === 429)
-                || (bodyJson && bodyJson.status === 'RESOURCE_EXHAUSTED');
+                || (bodyJson && (bodyJson.error?.code === 429 || bodyJson.status === 'RESOURCE_EXHAUSTED'));
 
             console.error('Gemini API error:', status, bodyText);
 
             if (isQuotaError) {
-                // If we haven't tried 1.5, switch to it and retry after a short delay
-                if (model !== 'gemini-1.5-flash' && !tried.has('gemini-1.5-flash')) {
-                    console.warn(`Quota hit on ${model}, falling back to gemini-1.5-flash and retrying...`);
-                    model = 'gemini-1.5-flash';
-                    // Respect Retry-After if provided
-                    const retryAfter = (bodyJson && bodyJson.retryDelay) ? parseInt(bodyJson.retryDelay) : null;
-                    const waitMs = retryAfter ? retryAfter * 1000 : (1000 * (attempt + 1));
+                // Try fallback model if configured and not already tried
+                if (GEMINI_FALLBACK_MODEL && !triedModels.has(GEMINI_FALLBACK_MODEL)) {
+                    console.warn(`Quota hit on ${model}, will attempt fallback model ${GEMINI_FALLBACK_MODEL}.`);
+                    model = GEMINI_FALLBACK_MODEL;
+                    // If the API provided retryDelay info, wait; otherwise short backoff
+                    const retryAfterSec = bodyJson?.details?.find(d => d['@type']?.includes('RetryInfo'))?.retryDelay
+                        || (bodyJson?.retryDelay);
+                    const waitMs = retryAfterSec ? parseFloat(retryAfterSec) * 1000 : 1000 * (attempt + 1);
                     await new Promise(r => setTimeout(r, waitMs));
                     continue;
                 }
 
-                // Already tried fallback or no fallback available — return helpful message
                 return `⚠️ I can't reach Gemini right now due to quota limits (model: ${model}). Please check your Google Cloud billing/quotas and try again later.`;
             }
 
-            // Generic API error
+            // Other API errors — give a generic helpful message
             return `⚠️ I hit an API error (${status}). Try again in a moment!`;
+
         } catch (e) {
             console.error('Fetch error calling Gemini:', e?.message || e);
-            // Network error — retry a couple times
+            // Network error — retry with backoff
             await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
             if (attempt === 2) return "⚠️ I couldn't reach my brain right now! Check the network and try again.";
         }
@@ -371,7 +380,7 @@ client.on('interactionCreate', async interaction => {
         const target = interaction.options.getUser('user');
         if (!target) {
             return interaction.reply({ content: '❌ Invalid user!', ephemeral: true });
-        }
+            }
         const key = `${guildId}:${target.id}`;
         if (!staffSet.has(key) && !staffSet.has(String(target.id))) {
             return interaction.reply({ content: `ℹ️ **${target.username}** isn't on the staff list.`, ephemeral: true });
