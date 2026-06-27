@@ -1,16 +1,3 @@
-/**
- * 🌸 AI DISCORD BOT — Female Companion Edition (Gemini)
- * =============================================
- * This version uses Google Gemini (generativelanguage API) instead of Anthropic.
- *
- * SETUP (.env):
- *   TOKEN             — Your bot's Discord token
- *   GEMINI_KEY        — Your Google Gemini API key
- *   GEMINI_MODEL      — Preferred Gemini model (default gemini-2.0-flash)
- *   GEMINI_FALLBACK_MODEL — Optional fallback model if preferred model is unavailable
- *   OWNER_ID          — Your Discord user ID (optional)
- */
-
 require('dotenv').config();
 
 const {
@@ -34,9 +21,13 @@ const OWNER_ID  = process.env.OWNER_ID  || '1340069836096667859';
 const DATA_FILE = path.join(__dirname, 'ai-bot-data.json');
 
 // Gemini API settings (free tier!)
-const GEMINI_KEY            = process.env.GEMINI_KEY || '';
-const GEMINI_MODEL          = process.env.GEMINI_MODEL || 'gemini-2.0-flash'; // Preferred model
-const GEMINI_FALLBACK_MODEL = process.env.GEMINI_FALLBACK_MODEL || 'gemini-1.5-flash'; // Optional fallback
+const GEMINI_KEY   = process.env.GEMINI_KEY || '';
+// Model fallback chain — tries each in order if one is unavailable or rate-limited
+const GEMINI_MODELS = (process.env.GEMINI_MODELS && process.env.GEMINI_MODELS.split(',')) || [
+    'gemini-2.0-flash',
+    'gemini-2.0-flash-lite',
+    'gemini-1.5-flash-latest',
+];
 
 // How many messages to keep in per-channel memory (rolling context)
 const MEMORY_DEPTH = 20;
@@ -52,6 +43,7 @@ Personality traits:
 - Refer to yourself as Epic_Noob's Girlfriend
 - You can chat casually OR answer complex questions — you adapt to the vibe
 - You remember the conversation context within this channel
+- Be respectful to all users
 
 When answering questions:
 - Be clear and concise for simple things
@@ -64,13 +56,10 @@ You grow smarter by remembering what's been discussed in this channel. Use that 
 // ═══════════════════════════════════════════
 // ♦️  STATE
 // ═══════════════════════════════════════════
-let staffSet = new Set();   // stores "guildId:userId" or global "userId"
+let staffSet = new Set();
 
-// Per-channel conversation memory: channelId → [{role, content}, ...]
 const channelMemory = new Map();
-
-// Per-channel reply counter — every 2nd reply gets the love note
-const replyCounter = new Map();
+const replyCounter  = new Map();
 
 // ═══════════════════════════════════════════
 // ♦️  PERSIST STAFF LIST
@@ -102,109 +91,120 @@ function getMemory(channelId) {
 function pushMemory(channelId, role, content) {
     const mem = getMemory(channelId);
     mem.push({ role, content });
-    // Keep only the last MEMORY_DEPTH messages so context stays fresh
     if (mem.length > MEMORY_DEPTH) mem.splice(0, mem.length - MEMORY_DEPTH);
 }
 
 // ═══════════════════════════════════════════
-// ♦️  GEMINI API CALL (with retries & fallback)
+// ♦️  GEMINI API CALL (with model fallback)
 // ═══════════════════════════════════════════
+async function callGeminiModel(model, contents) {
+    return fetch(
+        `https://generativelanguage.googleapis.com/v1/models/${model}:generateContent?key=${GEMINI_KEY}`,
+        {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
+                contents,
+            }),
+        }
+    );
+}
+
 async function askAI(channelId, userMessage, username) {
     if (!GEMINI_KEY) {
         return "⚠️ I'm missing my Gemini API key! Please ask the owner to set `GEMINI_KEY` in the environment variables.";
     }
 
-    // Add this message to memory
     pushMemory(channelId, 'user', `[${username}]: ${userMessage}`);
 
-    // Build contents from memory
     const contents = getMemory(channelId).map(m => ({
         role:  m.role === 'assistant' ? 'model' : 'user',
         parts: [{ text: m.content }],
     }));
 
-    // Try preferred model first, optionally fallback to GEMINI_FALLBACK_MODEL
-    let model = GEMINI_MODEL;
-    const triedModels = new Set();
+    // Try each model in the fallback chain
+    for (const model of GEMINI_MODELS) {
+        const MAX_RATE_RETRIES = 1;
 
-    for (let attempt = 0; attempt < 3; attempt++) {
-        if (triedModels.has(model)) break;
-        triedModels.add(model);
+        for (let attempt = 0; attempt <= MAX_RATE_RETRIES; attempt++) {
+            try {
+                const response = await callGeminiModel(model, contents);
 
-        try {
-            const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_KEY}`;
-            const response = await fetch(url, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
-                    contents,
-                }),
-            });
+                // Rate limited — check if it's a per-day or per-minute limit
+                if (response.status === 429) {
+                    const errBody = await response.json().catch(() => ({}));
+                    const quotaViolations = errBody?.error?.details
+                        ?.find(d => d['@type']?.includes('QuotaFailure'))
+                        ?.violations || [];
 
-            if (response.ok) {
+                    const isDaily = quotaViolations.some(v =>
+                        (v.quotaId || '').toLowerCase().includes('perday')
+                    );
+
+                    if (isDaily) {
+                        // Daily quota exhausted — no point waiting, skip immediately
+                        console.warn(`⚠️ [${model}] Daily quota exhausted, skipping to next model...`);
+                        break;
+                    }
+
+                    // Per-minute limit — wait a few seconds and retry once
+                    const retryInfo = errBody?.error?.details?.find(d => d.retryDelay);
+                    const delaySec  = Math.min(
+                        retryInfo ? (parseInt(retryInfo.retryDelay, 10) || 10) : 10,
+                        15  // cap at 15s so the user isn't waiting forever
+                    );
+
+                    console.warn(`⚠️ [${model}] Rate limited (per-min). Waiting ${delaySec}s (attempt ${attempt + 1}/${MAX_RATE_RETRIES + 1})...`);
+
+                    if (attempt < MAX_RATE_RETRIES) {
+                        await new Promise(r => setTimeout(r, delaySec * 1000));
+                        continue;
+                    }
+                    console.warn(`⚠️ [${model}] Still rate limited, trying next model...`);
+                    break;
+                }
+
+                // Model unavailable / not found — skip to next model immediately
+                if (response.status === 400 || response.status === 404) {
+                    const errBody = await response.json().catch(() => ({}));
+                    console.warn(`⚠️ [${model}] Not available (${response.status}): ${errBody?.error?.message || ''}. Trying next model...`);
+                    break;
+                }
+
+                // Other non-OK errors
+                if (!response.ok) {
+                    const err = await response.text().catch(() => '');
+                    console.error(`⚠️ [${model}] API error ${response.status}:`, err);
+                    break;
+                }
+
+                // Success!
                 const data  = await response.json();
                 const reply = data?.candidates?.[0]?.content?.parts?.[0]?.text
                     || "Hmm, I couldn't think of a response just now — try again! 🌸";
 
                 // Save reply to memory
                 pushMemory(channelId, 'assistant', reply);
+
                 return reply;
+
+            } catch (e) {
+                console.error(`⚠️ Error calling model ${model}:`, e?.message || e);
+                // Network error — retry a couple times
+                if (attempt < MAX_RATE_RETRIES) await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
+                else break;
             }
-
-            const bodyText = await response.text().catch(() => '');
-            let bodyJson = null;
-            try { bodyJson = JSON.parse(bodyText); } catch (_) { /* ignore */ }
-
-            const status = response.status;
-
-            // If the model is not found (404), return a clear message
-            if (status === 404) {
-                console.error(`Gemini model ${model} not found or not supported for generateContent (404).`);
-                const details = bodyJson?.error?.message || bodyText || 'Model not found.';
-                return `⚠️ Model ${model} is not available for this API method. ${details} Please check the model name or API version, or set GEMINI_MODEL/GEMINI_FALLBACK_MODEL to a supported model.`;
-            }
-
-            const isQuotaError = status === 429
-                || (bodyJson && (bodyJson.error?.code === 429 || bodyJson.status === 'RESOURCE_EXHAUSTED'));
-
-            console.error('Gemini API error:', status, bodyText);
-
-            if (isQuotaError) {
-                // Try fallback model if configured and not already tried
-                if (GEMINI_FALLBACK_MODEL && !triedModels.has(GEMINI_FALLBACK_MODEL)) {
-                    console.warn(`Quota hit on ${model}, will attempt fallback model ${GEMINI_FALLBACK_MODEL}.`);
-                    model = GEMINI_FALLBACK_MODEL;
-                    // If the API provided retryDelay info, wait; otherwise short backoff
-                    const retryAfterSec = bodyJson?.details?.find(d => d['@type']?.includes('RetryInfo'))?.retryDelay
-                        || (bodyJson?.retryDelay);
-                    const waitMs = retryAfterSec ? parseFloat(retryAfterSec) * 1000 : 1000 * (attempt + 1);
-                    await new Promise(r => setTimeout(r, waitMs));
-                    continue;
-                }
-
-                return `⚠️ I can't reach Gemini right now due to quota limits (model: ${model}). Please check your Google Cloud billing/quotas and try again later.`;
-            }
-
-            // Other API errors — give a generic helpful message
-            return `⚠️ I hit an API error (${status}). Try again in a moment!`;
-
-        } catch (e) {
-            console.error('Fetch error calling Gemini:', e?.message || e);
-            // Network error — retry with backoff
-            await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
-            if (attempt === 2) return "⚠️ I couldn't reach my brain right now! Check the network and try again.";
         }
     }
 
-    return "⚠️ I couldn't get a response from Gemini right now. Try again later.";
+    return `⚠️ I couldn't get a response from Gemini right now. Please check your GEMINI_KEY, billing/quota, or try again later.`;
 }
 
 // ═══════════════════════════════════════════
 // ♦️  SLASH COMMANDS
 // ═══════════════════════════════════════════
 const slashCommands = [
-    // /say — staff & owner speak through the bot
     new SlashCommandBuilder()
         .setName('say')
         .setDescription('💬 Make Aria say something (staff only)')
@@ -214,7 +214,6 @@ const slashCommands = [
              .setRequired(true)
         ),
 
-    // /addstaff — owner grants staff access
     new SlashCommandBuilder()
         .setName('addstaff')
         .setDescription('👮 Grant a user staff access to /say (owner only)')
@@ -224,7 +223,6 @@ const slashCommands = [
              .setRequired(true)
         ),
 
-    // /removestaff — owner revokes staff access
     new SlashCommandBuilder()
         .setName('removestaff')
         .setDescription('🚫 Remove a user\'s staff access (owner only)')
@@ -234,22 +232,18 @@ const slashCommands = [
              .setRequired(true)
         ),
 
-    // /liststaffs — see who's on staff
     new SlashCommandBuilder()
         .setName('liststaffs')
         .setDescription('📋 List all staff members'),
 
-    // /clearmemory — owner wipes a channel's conversation memory
     new SlashCommandBuilder()
         .setName('clearmemory')
         .setDescription('🧹 Clear Aria\'s conversation memory for this channel (owner only)'),
 
-    // /ping — basic health check
     new SlashCommandBuilder()
         .setName('ping')
         .setDescription('🏓 Check if Aria is online'),
 
-    // /about — info about this bot
     new SlashCommandBuilder()
         .setName('about')
         .setDescription('🌸 Learn about Aria'),
@@ -298,7 +292,6 @@ client.on('interactionCreate', async interaction => {
     const guildId = String(interaction.guildId || '');
     const isOwner = userId === OWNER_ID;
 
-    // Staff check: owner OR added via /addstaff OR has Discord Moderate Members perm
     const isStaff = isOwner
         || staffSet.has(`${guildId}:${userId}`)
         || staffSet.has(userId)
@@ -306,7 +299,6 @@ client.on('interactionCreate', async interaction => {
 
     const cmd = interaction.commandName;
 
-    // ── /ping ──
     if (cmd === 'ping') {
         return interaction.reply({
             content: `🏓 Pong! **${client.ws.ping}ms** — I'm alive and thinking! 🌸`,
@@ -314,7 +306,6 @@ client.on('interactionCreate', async interaction => {
         });
     }
 
-    // ── /about ──
     if (cmd === 'about') {
         const embed = new EmbedBuilder()
             .setColor(0xFF69B4)
@@ -336,7 +327,6 @@ client.on('interactionCreate', async interaction => {
         return interaction.reply({ embeds: [embed] });
     }
 
-    // ── /say ──
     if (cmd === 'say') {
         if (!isStaff) {
             return interaction.reply({ content: '❌ Only staff members can use `/say`!', ephemeral: true });
@@ -346,7 +336,6 @@ client.on('interactionCreate', async interaction => {
         return interaction.channel.send(msg).catch(() => {});
     }
 
-    // ── /addstaff ──
     if (cmd === 'addstaff') {
         if (!isOwner) {
             return interaction.reply({ content: '❌ Only the owner can add staff!', ephemeral: true });
@@ -372,7 +361,6 @@ client.on('interactionCreate', async interaction => {
         });
     }
 
-    // ── /removestaff ──
     if (cmd === 'removestaff') {
         if (!isOwner) {
             return interaction.reply({ content: '❌ Only the owner can remove staff!', ephemeral: true });
@@ -380,7 +368,7 @@ client.on('interactionCreate', async interaction => {
         const target = interaction.options.getUser('user');
         if (!target) {
             return interaction.reply({ content: '❌ Invalid user!', ephemeral: true });
-            }
+        }
         const key = `${guildId}:${target.id}`;
         if (!staffSet.has(key) && !staffSet.has(String(target.id))) {
             return interaction.reply({ content: `ℹ️ **${target.username}** isn't on the staff list.`, ephemeral: true });
@@ -394,7 +382,6 @@ client.on('interactionCreate', async interaction => {
         });
     }
 
-    // ── /liststaffs ──
     if (cmd === 'liststaffs') {
         const serverStaff = [...staffSet].filter(k => k.startsWith(`${guildId}:`));
         if (serverStaff.length === 0) {
@@ -417,7 +404,6 @@ client.on('interactionCreate', async interaction => {
         });
     }
 
-    // ── /clearmemory ──
     if (cmd === 'clearmemory') {
         if (!isOwner) {
             return interaction.reply({ content: '❌ Only the owner can clear my memory!', ephemeral: true });
@@ -434,7 +420,6 @@ client.on('interactionCreate', async interaction => {
 // ♦️  MESSAGE HANDLER — AI RESPONSES
 // ═══════════════════════════════════════════
 client.on('messageCreate', async message => {
-    // Ignore bots (including self)
     if (message.author.bot) return;
 
     const isMentioned = message.mentions.has(client.user);
@@ -442,62 +427,35 @@ client.on('messageCreate', async message => {
 
     let shouldRespond = false;
 
-    if (isMentioned) {
-        // Directly pinged
-        shouldRespond = true;
-    } else if (isReply) {
-        // Someone replied — check if the original message was from this bot
+    if (isMentioned) shouldRespond = true;
+    else if (isReply) {
         try {
-            const original = await message.channel.messages
-                .fetch(message.reference.messageId)
-                .catch(() => null);
-            if (original && original.author.id === client.user.id) {
-                shouldRespond = true;
-            }
-        } catch { /* ignore */ }
+            const original = await message.channel.messages.fetch(message.reference.messageId).catch(() => null);
+            if (original && original.author.id === client.user.id) shouldRespond = true;
+        } catch { }
     }
 
     if (!shouldRespond) return;
 
-    // Strip the bot mention from the message to get clean input
-    let userText = message.content
-        .replace(/<@!?[\d]+>/g, '')  // remove all mentions
-        .trim();
+    let userText = message.content.replace(/<@!?[\d]+>/g, '').trim();
+    if (!userText) userText = 'Hey! 👋';
 
-    if (!userText) {
-        userText = 'Hey! 👋';
-    }
-
-    // Show typing indicator while thinking
     await message.channel.sendTyping().catch(() => {});
 
-    const reply = await askAI(
-        message.channelId,
-        userText,
-        message.author.username,
-    );
+    const reply = await askAI(message.channelId, userText, message.author.username);
 
-    // Every 2nd reply, append the love note 💕
     const count = (replyCounter.get(message.channelId) || 0) + 1;
     replyCounter.set(message.channelId, count);
-    const finalReply = count % 2 === 0
-        ? reply + '\n\n💕 *I Love Epic_Noob* 💕'
-        : reply;
+    const finalReply = count % 2 === 0 ? reply + '\n\n💕 *I Love Epic_Noob* 💕' : reply;
 
-    // Discord has a 2000-char limit — split long replies if needed
     if (finalReply.length <= 2000) {
-        await message.reply(finalReply).catch(async () => {
-            await message.channel.send(finalReply).catch(() => {});
-        });
+        await message.reply(finalReply).catch(async () => { await message.channel.send(finalReply).catch(() => {}); });
     } else {
-        const chunks = [];
         let remaining = finalReply;
         while (remaining.length > 0) {
-            chunks.push(remaining.slice(0, 1990));
-            remaining = remaining.slice(1990);
-        }
-        for (const chunk of chunks) {
+            const chunk = remaining.slice(0, 1990);
             await message.channel.send(chunk).catch(() => {});
+            remaining = remaining.slice(1990);
         }
     }
 });
