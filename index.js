@@ -1,18 +1,12 @@
 /**
- * [1m🌸 AI DISCORD BOT — Female Companion Edition[22m
+ * 🌸 AI DISCORD BOT — Female Companion Edition (Gemini)
  * =============================================
- * A focused AI bot that:
- *  - Responds when pinged or replied to (powered by Claude / Anthropic API)
- *  - Learns and improves from conversations (rolling context memory)
- *  - /say command  — staff & owner can speak as the bot
- *  - /addstaff     — owner grants staff role (lets them use /say)
+ * This version uses Google Gemini (generativelanguage API) instead of Anthropic.
  *
  * SETUP (.env):
- *   TOKEN          — Your bot's Discord token
- *   ANTHROPIC_KEY  — Your Anthropic API key (claude-3-haiku-20240307 is cheap & fast)
- *   OWNER_ID       — Your Discord user ID
- *
- * Railway / single-file, no extra modules needed beyond discord.js + node-fetch (or native fetch).
+ *   TOKEN     — Your bot's Discord token
+ *   GEMINI_KEY— Your Google Gemini API key
+ *   OWNER_ID  — Your Discord user ID (optional)
  */
 
 require('dotenv').config();
@@ -37,10 +31,9 @@ const path   = require('path');
 const OWNER_ID  = process.env.OWNER_ID  || '1340069836096667859';
 const DATA_FILE = path.join(__dirname, 'ai-bot-data.json');
 
-// Anthropic API settings
-const ANTHROPIC_KEY   = process.env.ANTHROPIC_KEY || '';
-const ANTHROPIC_MODEL = 'claude-3-haiku-20240307'; // Fast + affordable
-const MAX_TOKENS      = 1000;
+// Gemini API settings (free tier!)
+const GEMINI_KEY   = process.env.GEMINI_KEY || '';
+const GEMINI_MODEL = 'gemini-1.5-flash'; // Free + fast
 
 // How many messages to keep in per-channel memory (rolling context)
 const MEMORY_DEPTH = 20;
@@ -111,53 +104,52 @@ function pushMemory(channelId, role, content) {
 }
 
 // ═══════════════════════════════════════════
-// ♦️  ANTHROPIC API CALL
+// ♦️  GEMINI API CALL
 // ═══════════════════════════════════════════
 async function askAI(channelId, userMessage, username) {
-    if (!ANTHROPIC_KEY) {
-        return "⚠️ I'm missing my Anthropic API key! Please ask the owner to set `ANTHROPIC_KEY` in the environment variables.";
+    if (!GEMINI_KEY) {
+        return "⚠️ I'm missing my Gemini API key! Please ask the owner to set `GEMINI_KEY` in the environment variables.";
     }
 
     // Add this message to memory
     pushMemory(channelId, 'user', `[${username}]: ${userMessage}`);
 
-    const messages = getMemory(channelId).map(m => ({
-        role:    m.role,
-        content: m.content,
+    // Gemini uses a flat contents array with parts
+    const contents = getMemory(channelId).map(m => ({
+        role:  m.role === 'assistant' ? 'model' : 'user',
+        parts: [{ text: m.content }],
     }));
 
     try {
-        const response = await fetch('https://api.anthropic.com/v1/messages', {
-            method: 'POST',
-            headers: {
-                'Content-Type':            'application/json',
-                'x-api-key':               ANTHROPIC_KEY,
-                'anthropic-version':       '2023-06-01',
-            },
-            body: JSON.stringify({
-                model:      ANTHROPIC_MODEL,
-                max_tokens: MAX_TOKENS,
-                system:     SYSTEM_PROMPT,
-                messages,
-            }),
-        });
+        const response = await fetch(
+            `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_KEY}`,
+            {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
+                    contents,
+                }),
+            }
+        );
 
         if (!response.ok) {
             const err = await response.text().catch(() => '');
-            console.error('Anthropic API error:', response.status, err);
+            console.error('Gemini API error:', response.status, err);
             return `⚠️ I hit an API error (${response.status}). Try again in a moment!`;
         }
 
         const data  = await response.json();
-        const reply = data?.content?.[0]?.text || "Hmm, I couldn't think of a response just now — try again! 🌸";
+        const reply = data?.candidates?.[0]?.content?.parts?.[0]?.text
+            || "Hmm, I couldn't think of a response just now — try again! 🌸";
 
-        // Save Aria's reply to memory too (so she "remembers" what she said)
+        // Save reply to memory
         pushMemory(channelId, 'assistant', reply);
 
         return reply;
 
     } catch (e) {
-        console.error('Fetch error calling Anthropic:', e?.message);
+        console.error('Fetch error calling Gemini:', e?.message);
         return "⚠️ I couldn't reach my brain right now! Check the network and try again.";
     }
 }
