@@ -33,7 +33,7 @@ const DATA_FILE = path.join(__dirname, 'ai-bot-data.json');
 
 // Gemini API settings (free tier!)
 const GEMINI_KEY   = process.env.GEMINI_KEY || '';
-const GEMINI_MODEL = 'gemini-2.0-flash'; // Free + fast
+const GEMINI_MODEL = 'gemini-2.0-flash'; // Free + fast (falls back to 1.5 if quota errors)
 
 // How many messages to keep in per-channel memory (rolling context)
 const MEMORY_DEPTH = 20;
@@ -104,7 +104,7 @@ function pushMemory(channelId, role, content) {
 }
 
 // ═══════════════════════════════════════════
-// ♦️  GEMINI API CALL
+// ♦️  GEMINI API CALL (with retries & fallback)
 // ═══════════════════════════════════════════
 async function askAI(channelId, userMessage, username) {
     if (!GEMINI_KEY) {
@@ -114,44 +114,81 @@ async function askAI(channelId, userMessage, username) {
     // Add this message to memory
     pushMemory(channelId, 'user', `[${username}]: ${userMessage}`);
 
-    // Gemini uses a flat contents array with parts
+    // Build contents from memory
     const contents = getMemory(channelId).map(m => ({
         role:  m.role === 'assistant' ? 'model' : 'user',
         parts: [{ text: m.content }],
     }));
 
-    try {
-        const response = await fetch(
-            `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_KEY}`,
-            {
+    // Try with preferred model, fallback to gemini-1.5-flash on quota errors
+    let model = GEMINI_MODEL;
+    const tried = new Set();
+
+    for (let attempt = 0; attempt < 3; attempt++) {
+        if (tried.has(model)) break;
+        tried.add(model);
+
+        try {
+            const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_KEY}`;
+            const response = await fetch(url, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
                     contents,
                 }),
+            });
+
+            if (response.ok) {
+                const data  = await response.json();
+                const reply = data?.candidates?.[0]?.content?.parts?.[0]?.text
+                    || "Hmm, I couldn't think of a response just now — try again! 🌸";
+
+                // Save reply to memory
+                pushMemory(channelId, 'assistant', reply);
+                return reply;
             }
-        );
 
-        if (!response.ok) {
-            const err = await response.text().catch(() => '');
-            console.error('Gemini API error:', response.status, err);
-            return `⚠️ I hit an API error (${response.status}). Try again in a moment!`;
+            // Not OK — examine error body
+            const bodyText = await response.text().catch(() => '');
+            let bodyJson = null;
+            try { bodyJson = JSON.parse(bodyText); } catch (_) { /* ignore */ }
+
+            // Handle quota / 429 specifically: try fallback model if available
+            const status = response.status;
+            const isQuotaError = status === 429
+                || (bodyJson && bodyJson.error && bodyJson.error.code === 429)
+                || (bodyJson && bodyJson.status === 'RESOURCE_EXHAUSTED');
+
+            console.error('Gemini API error:', status, bodyText);
+
+            if (isQuotaError) {
+                // If we haven't tried 1.5, switch to it and retry after a short delay
+                if (model !== 'gemini-1.5-flash' && !tried.has('gemini-1.5-flash')) {
+                    console.warn(`Quota hit on ${model}, falling back to gemini-1.5-flash and retrying...`);
+                    model = 'gemini-1.5-flash';
+                    // Respect Retry-After if provided
+                    const retryAfter = (bodyJson && bodyJson.retryDelay) ? parseInt(bodyJson.retryDelay) : null;
+                    const waitMs = retryAfter ? retryAfter * 1000 : (1000 * (attempt + 1));
+                    await new Promise(r => setTimeout(r, waitMs));
+                    continue;
+                }
+
+                // Already tried fallback or no fallback available — return helpful message
+                return `⚠️ I can't reach Gemini right now due to quota limits (model: ${model}). Please check your Google Cloud billing/quotas and try again later.`;
+            }
+
+            // Generic API error
+            return `⚠️ I hit an API error (${status}). Try again in a moment!`;
+        } catch (e) {
+            console.error('Fetch error calling Gemini:', e?.message || e);
+            // Network error — retry a couple times
+            await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
+            if (attempt === 2) return "⚠️ I couldn't reach my brain right now! Check the network and try again.";
         }
-
-        const data  = await response.json();
-        const reply = data?.candidates?.[0]?.content?.parts?.[0]?.text
-            || "Hmm, I couldn't think of a response just now — try again! 🌸";
-
-        // Save reply to memory
-        pushMemory(channelId, 'assistant', reply);
-
-        return reply;
-
-    } catch (e) {
-        console.error('Fetch error calling Gemini:', e?.message);
-        return "⚠️ I couldn't reach my brain right now! Check the network and try again.";
     }
+
+    return "⚠️ I couldn't get a response from Gemini right now. Try again later.";
 }
 
 // ═══════════════════════════════════════════
