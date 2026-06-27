@@ -1,9 +1,9 @@
 {
   "name": "ai-bot",
   "version": "1.0.0",
-  "main": "ai-bot.js",
+  "main": "index.js",
   "scripts": {
-    "start": "node ai-bot.js"
+    "start": "node index.js"
   },
   "dependencies": {
     "discord.js": "^14.0.0",
