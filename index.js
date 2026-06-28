@@ -21,7 +21,8 @@ const OWNER_ID  = process.env.OWNER_ID  || '1340069836096667859';
 const DATA_FILE = path.join(__dirname, 'ai-bot-data.json');
 
 const GEMINI_KEY   = process.env.GEMINI_KEY || '';
-GEMINI_MODELS=gemini-2.5-flash,gemini-2.0-flash,gemini-2.0-flash-lite,gemini-1.5-flash;
+const GEMINI_MODELS = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-2.0-flash-lite', 'gemini-1.5-flash'];
+
 
 const MEMORY_DEPTH = 20;
 
