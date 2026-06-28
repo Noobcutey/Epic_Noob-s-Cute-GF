@@ -25,8 +25,8 @@ const DATA_FILE = path.join(__dirname, 'ai-bot-data.json');
 const GEMINI_KEYS = [
     process.env.GEMINI_KEY || 'YOUR_FIRST_KEY_HERE',
     process.env.GEMINI_KEY_2 || 'YOUR_SECOND_KEY_HERE',
-    process.env.GEMINI_KEY_3 || 'YOUR_THIRD_KEY_HERE'
-    process.env.GEMINI_KEY_4 || 'YOUR_4_KEY_HERE'
+    process.env.GEMINI_KEY_3 || 'YOUR_THIRD_KEY_HERE',
+    process.env.GEMINI_KEY_4 || 'YOUR_4_KEY_HERE',
 ];
 
 // Cleaned up array to avoid deprecated 1.5-flash endpoints causing 404 delays
