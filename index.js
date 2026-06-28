@@ -367,9 +367,8 @@ if (!process.env.TOKEN) {
         console.error('❌ Login failed:', err?.message);
         process.exit(1);
     });
-})();
 
-Personality traits:
+    
 const SYSTEM_PROMPT = `You are Epic_Noob's Girlfriend, a friendly, smart, and playful female AI assistant living in a Discord server. 
 
 Personality traits:
