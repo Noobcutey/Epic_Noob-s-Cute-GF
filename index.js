@@ -224,9 +224,8 @@ client.on('interactionCreate', async interaction => {
         if (cmd === 'about') {
             const embed = new EmbedBuilder()
                 .setColor(0xFF69B4)
-                .setTitle('🌸 Hi, I\'m Aria! I am made by noobnoob_81 and rockfuck (real user: cirovenmc)'];
-')
-                .setDescription('I\'m an AI companion bot here to chat! Just ping or reply to me.')
+                .setTitle("🌸 Hi, I'm Aria! I am made by noobnoob_81 and rockfuck (real user: cirovenmc)")
+                .setDescription("I'm an AI companion bot here to chat! Just ping or reply to me.")
                 .addFields({ name: '🤖 Powered by', value: `Google Gemini (${GEMINI_KEYS.length} keys loaded)`, inline: true })
                 .setTimestamp();
             return await interaction.reply({ embeds: [embed] });
