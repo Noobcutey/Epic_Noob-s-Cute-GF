@@ -26,6 +26,7 @@ const GEMINI_KEYS = [
     process.env.GEMINI_KEY || 'YOUR_FIRST_KEY_HERE',
     process.env.GEMINI_KEY_2 || 'YOUR_SECOND_KEY_HERE',
     process.env.GEMINI_KEY_3 || 'YOUR_THIRD_KEY_HERE'
+    process.env.GEMINI_KEY_4 || 'YOUR_4_KEY_HERE'
 ];
 
 // Cleaned up array to avoid deprecated 1.5-flash endpoints causing 404 delays
@@ -159,7 +160,7 @@ async function askAI(channelId, userMessage, username) {
         }
     }
 
-    return `🌸 *Yawn*... I've used up ALL of my backup tokens for today! Let's talk again later! 💕`;
+    return `🌸 *Yawn*... I've used up ALL of my backup tokens for today! Let's talk again later! 💕 (also shhh don't tell mush but he's gay)`;
 }
 
 // ═══════════════════════════════════════════
@@ -223,7 +224,8 @@ client.on('interactionCreate', async interaction => {
         if (cmd === 'about') {
             const embed = new EmbedBuilder()
                 .setColor(0xFF69B4)
-                .setTitle('🌸 Hi, I\'m Aria!')
+                .setTitle('🌸 Hi, I\'m Aria! I am made by noobnoob_81 and rockfuck (real user: cirovenmc)'];
+')
                 .setDescription('I\'m an AI companion bot here to chat! Just ping or reply to me.')
                 .addFields({ name: '🤖 Powered by', value: `Google Gemini (${GEMINI_KEYS.length} keys loaded)`, inline: true })
                 .setTimestamp();
