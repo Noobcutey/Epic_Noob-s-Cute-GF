@@ -183,23 +183,77 @@ async function askAI(channelId, userMessage, username) {
                 const data  = await response.json();
                 const reply = data?.candidates?.[0]?.content?.parts?.[0]?.text
                     || "Hmm, I couldn't think of a response just now — try again! 🌸";
+// ═══════════════════════════════════════════
+// ♦️  GEMINI API CALL (Fixed Structure)
+// ═══════════════════════════════════════════
+async function callGeminiModel(model, contents) {
+    return fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_KEY}`,
+        {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                systemInstruction: { 
+                    parts: [{ text: SYSTEM_PROMPT }] 
+                },
+                contents: contents, // Properly structured history array
+                generationConfig: {
+                    temperature: 0.7,
+                    topP: 0.95,
+                }
+            }),
+        }
+    );
+}
 
-                // Save reply to memory
-                pushMemory(channelId, 'assistant', reply);
+async function askAI(channelId, userMessage, username) {
+    if (!GEMINI_KEY) {
+        return "⚠️ I'm missing my Gemini API key! Please ask the owner to set `GEMINI_KEY` in the environment variables.";
+    }
 
-                return reply;
+    // Contextual clean message
+    const formattedMessage = `${username} says: ${userMessage}`;
+    pushMemory(channelId, 'user', formattedMessage);
 
-            } catch (e) {
-                console.error(`⚠️ Error calling model ${model}:`, e?.message || e);
-                // Network error — retry a couple times
-                if (attempt < MAX_RATE_RETRIES) await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
-                else break;
+    // Map the rolling memory into format the API strictly expects
+    const contents = getMemory(channelId).map(m => ({
+        role:  m.role === 'assistant' ? 'model' : 'user',
+        parts: [{ text: m.content }],
+    }));
+
+    // Try each model in the fallback chain
+    for (const model of GEMINI_MODELS) {
+        try {
+            const response = await callGeminiModel(model, contents);
+
+            if (response.status === 429) {
+                console.warn(`⚠️ [${model}] Rate limited, trying next model...`);
+                continue;
             }
+
+            if (!response.ok) {
+                const errText = await response.text();
+                console.error(`⚠️ [${model}] API Error ${response.status}:`, errText);
+                continue; // Try next model
+            }
+
+            const data = await response.json();
+            const reply = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+
+            if (reply) {
+                // Save clean assistant reply to history
+                pushMemory(channelId, 'assistant', reply);
+                return reply;
+            }
+
+        } catch (e) {
+            console.error(`⚠️ Error calling model ${model}:`, e?.message || e);
         }
     }
 
-    return `⚠️ I couldn't get a response from Gemini right now. Please check your GEMINI_KEY, billing/quota, or try again later.`;
+    return `⚠️ I couldn't get a response from Gemini right now. Please check your config or try again later.`;
 }
+
 
 // ═══════════════════════════════════════════
 // ♦️  SLASH COMMANDS
