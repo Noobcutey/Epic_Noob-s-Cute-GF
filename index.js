@@ -20,7 +20,13 @@ const path   = require('path');
 const OWNER_ID  = process.env.OWNER_ID  || '1340069836096667859';
 const DATA_FILE = path.join(__dirname, 'ai-bot-data.json');
 
-const GEMINI_KEY   = process.env.GEMINI_KEY || '';
+// Put all your backup Gemini API keys here! 
+// Note: They must be from DIFFERENT Google Accounts to bypass shared quotas.
+const GEMINI_KEYS = [
+    process.env.GEMINI_KEY || 'YOUR_FIRST_KEY_HERE',
+    process.env.GEMINI_KEY_2 || 'YOUR_SECOND_KEY_HERE',
+    process.env.GEMINI_KEY_3 || 'YOUR_THIRD_KEY_HERE'
+];
 
 // Cleaned up array to avoid deprecated 1.5-flash endpoints causing 404 delays
 const GEMINI_MODELS = (process.env.GEMINI_MODELS && process.env.GEMINI_MODELS.split(',')) || [
@@ -50,6 +56,7 @@ Personality traits:
 let staffSet = new Set();
 const channelMemory = new Map();
 const replyCounter  = new Map();
+let currentKeyIndex = 0; // Tracks which key we are currently using from the array
 
 // ═══════════════════════════════════════════
 // ♦️  PERSIST STAFF LIST
@@ -85,32 +92,13 @@ function pushMemory(channelId, role, content) {
 }
 
 // ═══════════════════════════════════════════
-// ♦️  GEMINI API CALL
+// ♦️  GEMINI API CALL WITH ROTATING KEYS
 // ═══════════════════════════════════════════
-async function callGeminiModel(model, contents) {
-    return fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_KEY}`,
-        {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                systemInstruction: { 
-                    parts: [{ text: SYSTEM_PROMPT }] 
-                },
-                contents: contents,
-                generationConfig: {
-                    temperature: 0.7,
-                    topP: 0.95,
-                    maxOutputTokens: 500 // Limit model lengths directly at the API stage to prevent flood
-                }
-            }),
-        }
-    );
-}
-
 async function askAI(channelId, userMessage, username) {
-    if (!GEMINI_KEY) {
-        return "⚠️ I'm missing my Gemini API key! Please ask the owner to set `GEMINI_KEY`.";
+    // Filter out any empty items from the array
+    const activeKeys = GEMINI_KEYS.filter(k => k && k.trim() !== '' && !k.includes('YOUR_'));
+    if (activeKeys.length === 0) {
+        return "⚠️ I'm missing valid Gemini API keys! Please set them up in the code or environment variables.";
     }
 
     const formattedMessage = `${username} says: ${userMessage}`;
@@ -121,34 +109,56 @@ async function askAI(channelId, userMessage, username) {
         parts: [{ text: m.content }],
     }));
 
-    for (const model of GEMINI_MODELS) {
-        try {
-            const response = await callGeminiModel(model, contents);
+    // Allow cycling up to the total number of keys available
+    for (let keyAttempt = 0; keyAttempt < activeKeys.length; keyAttempt++) {
+        const currentKey = activeKeys[currentKeyIndex];
 
-            if (response.status === 429) {
-                console.warn(`⚠️ [${model}] Rate limited or quota exhausted. Skipping immediately...`);
-                continue; 
+        for (const model of GEMINI_MODELS) {
+            try {
+                const response = await fetch(
+                    `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${currentKey}`,
+                    {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
+                            contents: contents,
+                            generationConfig: {
+                                temperature: 0.7,
+                                topP: 0.95,
+                                maxOutputTokens: 500 // Keeps messages a bit shorter to avoid flooding
+                            }
+                        }),
+                    }
+                );
+
+                // Handle Quota Limit immediately by rotating keys
+                if (response.status === 429) {
+                    console.warn(`⚠️ [Key #${currentKeyIndex + 1}] Quota exhausted on ${model}. Rotating API keys...`);
+                    currentKeyIndex = (currentKeyIndex + 1) % activeKeys.length;
+                    break; // Break the model loop to retry the message with the new key
+                }
+
+                if (!response.ok) {
+                    console.error(`⚠️ [Key #${currentKeyIndex + 1}] API Error ${response.status} on ${model}`);
+                    continue; 
+                }
+
+                const data = await response.json();
+                const reply = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+
+                if (reply) {
+                    pushMemory(channelId, 'assistant', reply);
+                    return reply;
+                }
+
+            } catch (e) {
+                console.error(`⚠️ Error with Key #${currentKeyIndex + 1} on model ${model}:`, e?.message || e);
             }
-
-            if (!response.ok) {
-                console.error(`⚠️ [${model}] API Error ${response.status}`);
-                continue; 
-            }
-
-            const data = await response.json();
-            const reply = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-
-            if (reply) {
-                pushMemory(channelId, 'assistant', reply);
-                return reply;
-            }
-
-        } catch (e) {
-            console.error(`⚠️ Error calling model ${model}:`, e?.message || e);
         }
     }
 
-    return `🌸 *Yawn*... I'm a bit tired right now (Free Quota Exhausted!). Let's talk again soon or try in a bit! 💕`;
+    return `🌸 *Yawn*... I've used up ALL of my backup tokens for today! Let's talk again later! 💕`;
 }
 
 // ═══════════════════════════════════════════
@@ -214,7 +224,7 @@ client.on('interactionCreate', async interaction => {
                 .setColor(0xFF69B4)
                 .setTitle('🌸 Hi, I\'m Aria!')
                 .setDescription('I\'m an AI companion bot here to chat! Just ping or reply to me.')
-                .addFields({ name: '🤖 Powered by', value: 'Google Gemini', inline: true })
+                .addFields({ name: '🤖 Powered by', value: `Google Gemini (${GEMINI_KEYS.length} keys loaded)`, inline: true })
                 .setTimestamp();
             return await interaction.reply({ embeds: [embed] });
         }
@@ -266,7 +276,7 @@ client.on('interactionCreate', async interaction => {
 });
 
 // ═══════════════════════════════════════════
-// ♦️  MESSAGE HANDLER (Anti-Flood Guard Enforced)
+// ♦️  MESSAGE HANDLER (Anti-Flood Enforced)
 // ═══════════════════════════════════════════
 client.on('messageCreate', async message => {
     if (message.author.bot) return;
