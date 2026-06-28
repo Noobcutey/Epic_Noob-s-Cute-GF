@@ -21,8 +21,13 @@ const OWNER_ID  = process.env.OWNER_ID  || '1340069836096667859';
 const DATA_FILE = path.join(__dirname, 'ai-bot-data.json');
 
 const GEMINI_KEY   = process.env.GEMINI_KEY || '';
-const GEMINI_MODELS = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-2.0-flash-lite', 'gemini-1.5-flash'];
 
+// Cleaned up array to avoid deprecated 1.5-flash endpoints causing 404 delays
+const GEMINI_MODELS = (process.env.GEMINI_MODELS && process.env.GEMINI_MODELS.split(',')) || [
+    'gemini-2.5-flash',
+    'gemini-2.0-flash',
+    'gemini-2.0-flash-lite'
+];
 
 const MEMORY_DEPTH = 20;
 
@@ -80,7 +85,7 @@ function pushMemory(channelId, role, content) {
 }
 
 // ═══════════════════════════════════════════
-// ♦️  GEMINI API CALL (Fixed Structure with Model Fallback)
+// ♦️  GEMINI API CALL
 // ═══════════════════════════════════════════
 async function callGeminiModel(model, contents) {
     return fetch(
@@ -96,6 +101,7 @@ async function callGeminiModel(model, contents) {
                 generationConfig: {
                     temperature: 0.7,
                     topP: 0.95,
+                    maxOutputTokens: 500 // Limit model lengths directly at the API stage to prevent flood
                 }
             }),
         }
@@ -104,7 +110,7 @@ async function callGeminiModel(model, contents) {
 
 async function askAI(channelId, userMessage, username) {
     if (!GEMINI_KEY) {
-        return "⚠️ I'm missing my Gemini API key! Please ask the owner to set `GEMINI_KEY` in the environment variables.";
+        return "⚠️ I'm missing my Gemini API key! Please ask the owner to set `GEMINI_KEY`.";
     }
 
     const formattedMessage = `${username} says: ${userMessage}`;
@@ -116,100 +122,49 @@ async function askAI(channelId, userMessage, username) {
     }));
 
     for (const model of GEMINI_MODELS) {
-        const MAX_RATE_RETRIES = 1;
+        try {
+            const response = await callGeminiModel(model, contents);
 
-        for (let attempt = 0; attempt <= MAX_RATE_RETRIES; attempt++) {
-            try {
-                const response = await callGeminiModel(model, contents);
-
-                if (response.status === 429) {
-                    const errBody = await response.json().catch(() => ({}));
-                    const quotaViolations = errBody?.error?.details
-                        ?.find(d => d['@type']?.includes('QuotaFailure'))
-                        ?.violations || [];
-
-                    const isDaily = quotaViolations.some(v =>
-                        (v.quotaId || '').toLowerCase().includes('perday')
-                    );
-
-                    if (isDaily) {
-                        console.warn(`⚠️ [${model}] Daily quota exhausted, skipping to next model...`);
-                        break;
-                    }
-
-                    const retryInfo = errBody?.error?.details?.find(d => d.retryDelay);
-                    const delaySec  = Math.min(
-                        retryInfo ? (parseInt(retryInfo.retryDelay, 10) || 10) : 10,
-                        15
-                    );
-
-                    console.warn(`⚠️ [${model}] Rate limited (per-min). Waiting ${delaySec}s (attempt ${attempt + 1}/${MAX_RATE_RETRIES + 1})...`);
-
-                    if (attempt < MAX_RATE_RETRIES) {
-                        await new Promise(r => setTimeout(r, delaySec * 1000));
-                        continue;
-                    }
-                    console.warn(`⚠️ [${model}] Still rate limited, trying next model...`);
-                    break;
-                }
-
-                if (response.status === 400 || response.status === 404) {
-                    const errBody = await response.json().catch(() => ({}));
-                    console.warn(`⚠️ [${model}] Not available (${response.status}): ${errBody?.error?.message || ''}. Trying next model...`);
-                    break;
-                }
-
-                if (!response.ok) {
-                    const err = await response.text().catch(() => '');
-                    console.error(`⚠️ [${model}] API error ${response.status}:`, err);
-                    break;
-                }
-
-                const data = await response.json();
-                const reply = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-
-                if (reply) {
-                    pushMemory(channelId, 'assistant', reply);
-                    return reply;
-                }
-
-            } catch (e) {
-                console.error(`⚠️ Error calling model ${model}:`, e?.message || e);
+            if (response.status === 429) {
+                console.warn(`⚠️ [${model}] Rate limited or quota exhausted. Skipping immediately...`);
+                continue; 
             }
+
+            if (!response.ok) {
+                console.error(`⚠️ [${model}] API Error ${response.status}`);
+                continue; 
+            }
+
+            const data = await response.json();
+            const reply = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+
+            if (reply) {
+                pushMemory(channelId, 'assistant', reply);
+                return reply;
+            }
+
+        } catch (e) {
+            console.error(`⚠️ Error calling model ${model}:`, e?.message || e);
         }
     }
 
-    return `⚠️ I couldn't get a response from Gemini right now. Please check your configurations or try again later.`;
+    return `🌸 *Yawn*... I'm a bit tired right now (Free Quota Exhausted!). Let's talk again soon or try in a bit! 💕`;
 }
 
 // ═══════════════════════════════════════════
 // ♦️  SLASH COMMAND CONFIGS
 // ═══════════════════════════════════════════
 const slashCommands = [
-    new SlashCommandBuilder()
-        .setName('say')
-        .setDescription('💬 Make Aria say something (staff only)')
+    new SlashCommandBuilder().setName('ping').setDescription('🏓 Check if Aria is online'),
+    new SlashCommandBuilder().setName('about').setDescription('🌸 Learn about Aria'),
+    new SlashCommandBuilder().setName('say').setDescription('💬 Make Aria say something (staff only)')
         .addStringOption(o => o.setName('message').setDescription('What should Aria say?').setRequired(true)),
-    new SlashCommandBuilder()
-        .setName('addstaff')
-        .setDescription('👮 Grant a user staff access to /say (owner only)')
-        .addUserOption(o => o.setName('user').setDescription('User to add as staff').setRequired(true)),
-    new SlashCommandBuilder()
-        .setName('removestaff')
-        .setDescription('🚫 Remove a user\'s staff access (owner only)')
-        .addUserOption(o => o.setName('user').setDescription('User to remove from staff').setRequired(true)),
-    new SlashCommandBuilder()
-        .setName('liststaffs')
-        .setDescription('📋 List all staff members'),
-    new SlashCommandBuilder()
-        .setName('clearmemory')
-        .setDescription('🧹 Clear Aria\'s conversation memory for this channel (owner only)'),
-    new SlashCommandBuilder()
-        .setName('ping')
-        .setDescription('🏓 Check if Aria is online'),
-    new SlashCommandBuilder()
-        .setName('about')
-        .setDescription('🌸 Learn about Aria'),
+    new SlashCommandBuilder().setName('addstaff').setDescription('👮 Add staff (owner only)')
+        .addUserOption(o => o.setName('user').setDescription('User to add').setRequired(true)),
+    new SlashCommandBuilder().setName('removestaff').setDescription('🚫 Remove staff (owner only)')
+        .addUserOption(o => o.setName('user').setDescription('User to remove').setRequired(true)),
+    new SlashCommandBuilder().setName('liststaffs').setDescription('📋 List all staff members'),
+    new SlashCommandBuilder().setName('clearmemory').setDescription('🧹 Clear conversation memory (owner only)')
 ];
 
 const client = new Client({
@@ -224,7 +179,6 @@ const client = new Client({
 client.once('ready', async () => {
     console.log('╔══════════════════════════════════════════╗');
     console.log('║  🌸 Aria — AI Companion Bot              ║');
-    console.log('║  Ping or reply to me and I\'ll respond!  ║');
     console.log('╚══════════════════════════════════════════╝');
     console.log(`✅ Online as ${client.user?.tag}`);
 
@@ -247,116 +201,72 @@ client.on('interactionCreate', async interaction => {
     const userId  = String(interaction.user.id);
     const guildId = String(interaction.guildId || '');
     const isOwner = userId === OWNER_ID;
-
-    const isStaff = isOwner
-        || staffSet.has(`${guildId}:${userId}`)
-        || staffSet.has(userId)
-        || !!interaction.memberPermissions?.has(PermissionFlagsBits.ModerateMembers);
-
+    const isStaff = isOwner || staffSet.has(`${guildId}:${userId}`) || staffSet.has(userId) || !!interaction.memberPermissions?.has(PermissionFlagsBits.ModerateMembers);
     const cmd = interaction.commandName;
 
     try {
         if (cmd === 'ping') {
-            return await interaction.reply({
-                content: `🏓 Pong! **${client.ws.ping}ms** — I'm alive and thinking! 🌸`,
-                ephemeral: true,
-            }).catch(() => {});
+            return await interaction.reply({ content: `🏓 Pong! **${client.ws.ping}ms** — I'm alive! 🌸`, ephemeral: true });
         }
 
         if (cmd === 'about') {
             const embed = new EmbedBuilder()
                 .setColor(0xFF69B4)
                 .setTitle('🌸 Hi, I\'m Aria!')
-                .setDescription(
-                    'I\'m an AI companion bot here to chat, answer questions, and help you with anything you need!\n\n' +
-                    '**How to talk to me:**\n' +
-                    '> • **Ping me** — `@Aria your question here`\n' +
-                    '> • **Reply to one of my messages** — I\'ll keep the conversation going\n\n' +
-                    'I remember our conversation in each channel so I can give you better answers over time! 🧠✨'
-                )
-                .addFields(
-                    { name: '🤖 Powered by', value: 'Google Gemini',    inline: true },
-                    { name: '💬 Commands',   value: '`/say` `/addstaff`',   inline: true },
-                    { name: '🌸 Personality', value: 'Friendly & helpful',  inline: true },
-                )
-                .setFooter({ text: 'Just ping or reply to start chatting!' })
+                .setDescription('I\'m an AI companion bot here to chat! Just ping or reply to me.')
+                .addFields({ name: '🤖 Powered by', value: 'Google Gemini', inline: true })
                 .setTimestamp();
-            return await interaction.reply({ embeds: [embed] }).catch(() => {});
+            return await interaction.reply({ embeds: [embed] });
         }
 
         if (cmd === 'say') {
-            if (!isStaff) return await interaction.reply({ content: '❌ Only staff members can use `/say`!', ephemeral: true }).catch(() => {});
+            if (!isStaff) return await interaction.reply({ content: '❌ Staff only!', ephemeral: true });
             const msg = interaction.options.getString('message') || "Hello!";
-            await interaction.reply({ content: '✅ Sent!', ephemeral: true }).catch(() => {});
+            await interaction.reply({ content: '✅ Sent!', ephemeral: true });
             return interaction.channel.send(msg).catch(() => {});
         }
 
         if (cmd === 'addstaff') {
-            if (!isOwner) return await interaction.reply({ content: '❌ Only the owner can add staff!', ephemeral: true }).catch(() => {});
+            if (!isOwner) return await interaction.reply({ content: '❌ Owner only!', ephemeral: true });
             const target = interaction.options.getUser('user');
-            if (!target || target.bot) return await interaction.reply({ content: '❌ Invalid user!', ephemeral: true }).catch(() => {});
-            
-            const key = `${guildId}:${target.id}`;
-            if (staffSet.has(key)) return await interaction.reply({ content: `ℹ️ **${target.username}** is already staff!`, ephemeral: true }).catch(() => {});
-            
-            staffSet.add(key);
+            if (!target || target.bot) return await interaction.reply({ content: '❌ Invalid user!', ephemeral: true });
+            staffSet.add(`${guildId}:${target.id}`);
             await saveData();
-            return await interaction.reply({
-                embeds: [new EmbedBuilder()
-                    .setColor(0x57F287)
-                    .setTitle('👮 Staff Added')
-                    .setDescription(`**${target.username}** is now a staff member and can use \`/say\`! 🌸`)
-                    .setThumbnail(target.displayAvatarURL())
-                    .setTimestamp()
-                ],
-            }).catch(() => {});
+            return await interaction.reply({ content: `👮 **${target.username}** added to staff! 🌸` });
         }
 
         if (cmd === 'removestaff') {
-            if (!isOwner) return await interaction.reply({ content: '❌ Only the owner can remove staff!', ephemeral: true }).catch(() => {});
+            if (!isOwner) return await interaction.reply({ content: '❌ Owner only!', ephemeral: true });
             const target = interaction.options.getUser('user');
-            if (!target) return await interaction.reply({ content: '❌ Invalid user!', ephemeral: true }).catch(() => {});
-            
-            const key = `${guildId}:${target.id}`;
-            staffSet.delete(key);
-            staffSet.delete(String(target.id));
+            if (!target) return await interaction.reply({ content: '❌ Invalid user!', ephemeral: true });
+            staffSet.delete(`${guildId}:${target.id}`);
             await saveData();
-            return await interaction.reply({ content: `✅ Removed **${target.username}** from staff.`, ephemeral: true }).catch(() => {});
+            return await interaction.reply({ content: `✅ Removed **${target.username}** from staff.` });
         }
 
         if (cmd === 'liststaffs') {
             const serverStaff = [...staffSet].filter(k => k.startsWith(`${guildId}:`));
-            if (serverStaff.length === 0) return await interaction.reply({ content: '📋 No staff members found!', ephemeral: true }).catch(() => {});
-            
+            if (serverStaff.length === 0) return await interaction.reply({ content: '📋 No staff members found!', ephemeral: true });
             const lines = await Promise.all(serverStaff.map(async k => {
                 const uid = k.split(':')[1];
                 const u   = await client.users.fetch(uid).catch(() => null);
                 return `• **${u?.username || 'Unknown'}** (\`${uid}\`)`;
             }));
-            return await interaction.reply({
-                embeds: [new EmbedBuilder()
-                    .setColor(0x3498DB)
-                    .setTitle('👮 Staff List')
-                    .setDescription(lines.join('\n'))
-                    .setFooter({ text: `${serverStaff.length} staff member(s)` })
-                    .setTimestamp()
-                ],
-                ephemeral: true,
-            }).catch(() => {});
+            return await interaction.reply({ embeds: [new EmbedBuilder().setColor(0x3498DB).setTitle('👮 Staff List').setDescription(lines.join('\n'))], ephemeral: true });
         }
 
         if (cmd === 'clearmemory') {
-            if (!isOwner) return await interaction.reply({ content: '❌ Only the owner can clear memory!', ephemeral: true }).catch(() => {});
+            if (!isOwner) return await interaction.reply({ content: '❌ Owner only!', ephemeral: true });
             channelMemory.delete(interaction.channelId);
-            return await interaction.reply({ content: '🧹 Done! I\'ve forgotten this channel\'s conversation history. Fresh start! 🌸', ephemeral: true }).catch(() => {});
+            return await interaction.reply({ content: '🧹 Memory cleared!', ephemeral: true });
         }
     } catch (err) {
-        console.error("❌ Error handling slash command:", err.message);
+        console.error("❌ Slash command error:", err.message);
     }
 });
 
 // ═══════════════════════════════════════════
-// ♦️  MESSAGE HANDLER
+// ♦️  MESSAGE HANDLER (Anti-Flood Guard Enforced)
 // ═══════════════════════════════════════════
 client.on('messageCreate', async message => {
     if (message.author.bot) return;
@@ -384,33 +294,27 @@ client.on('messageCreate', async message => {
     const count = (replyCounter.get(message.channelId) || 0) + 1;
     replyCounter.set(message.channelId, count);
     
-    const finalReply = count % 2 === 0 ? reply + '\n\n💕 *I Love Epic_Noob* 💕' : reply;
+    let finalReply = count % 2 === 0 ? reply + '\n\n💕 *I Love Epic_Noob* 💕' : reply;
 
-    if (finalReply.length <= 2000) {
-        await message.reply(finalReply).catch(async () => { 
-            await message.channel.send(finalReply).catch(() => {}); 
-        });
-    } else {
-        let remaining = finalReply;
-        while (remaining.length > 0) {
-            const chunk = remaining.slice(0, 1990);
-            if (chunk.trim().length > 0) {
-                await message.channel.send(chunk).catch(() => {});
-            }
-            remaining = remaining.slice(1990);
-        }
+    // Strict Anti-Flood Guard: Instead of multiple messages, it caps exactly inside 1 clean reply
+    if (finalReply.length > 2000) {
+        finalReply = finalReply.slice(0, 1990) + "\n*(truncated to prevent spam)...*";
     }
+
+    await message.reply(finalReply).catch(async () => { 
+        await message.channel.send(finalReply).catch(() => {}); 
+    });
 });
 
 // ═══════════════════════════════════════════
 // ♦️  GLOBAL ERROR CATCHERS
 // ═══════════════════════════════════════════
-process.on('unhandledRejection', err => console.error('⚠️ Caught Unhandled Rejection:', err?.message || err));
-process.on('uncaughtException',  err => console.error('⚠️ Caught Uncaught Exception:',  err?.message || err));
-client.on('error', err => console.error('⚠️ Discord Client Error:', err?.message));
+process.on('unhandledRejection', err => console.error('⚠️ Unhandled Rejection:', err?.message || err));
+process.on('uncaughtException',  err => console.error('⚠️ Uncaught Exception:',  err?.message || err));
+client.on('error', err => console.error('⚠️ Client Error:', err?.message));
 
 async function shutdown(sig) {
-    console.log(`\n🔴 ${sig} — shutting down safely...`);
+    console.log(`\n🔴 ${sig} — closing safely...`);
     await saveData();
     client.destroy();
     process.exit(0);
@@ -422,7 +326,7 @@ process.on('SIGTERM', () => shutdown('SIGTERM'));
 // ♦️  BOOT
 // ═══════════════════════════════════════════
 if (!process.env.TOKEN) {
-    console.error('❌ TOKEN environment variable is not set!');
+    console.error('❌ TOKEN variable is not set!');
     process.exit(1);
 }
 
