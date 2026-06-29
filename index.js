@@ -23,10 +23,14 @@ const DATA_FILE = path.join(__dirname, 'ai-bot-data.json');
 // Put all your backup Gemini API keys here! 
 // Note: They must be from DIFFERENT Google Accounts to bypass shared quotas.
 const GEMINI_KEYS = [
-    process.env.GEMINI_KEY || 'YOUR_FIRST_KEY_HERE',
+    process.env.GEMINI_KEY   || 'YOUR_FIRST_KEY_HERE',
     process.env.GEMINI_KEY_2 || 'YOUR_SECOND_KEY_HERE',
     process.env.GEMINI_KEY_3 || 'YOUR_THIRD_KEY_HERE',
-    process.env.GEMINI_KEY_4 || 'YOUR_4_KEY_HERE',
+    process.env.GEMINI_KEY_4 || 'YOUR_FOURTH_KEY_HERE',
+    process.env.GEMINI_KEY_5 || 'YOUR_FIFTH_KEY_HERE',
+    process.env.GEMINI_KEY_6 || 'YOUR_SIXTH_KEY_HERE',
+    process.env.GEMINI_KEY_7 || 'YOUR_SEVENTH_KEY_HERE',
+    process.env.GEMINI_KEY_8 || 'YOUR_EIGHTH_KEY_HERE',
 ];
 
 // Cleaned up array to avoid deprecated 1.5-flash endpoints causing 404 delays
@@ -48,8 +52,9 @@ Personality traits:
 - Refer to yourself as Epic_Noob's Girlfriend
 - You can chat casually OR answer complex questions — you adapt to the vibe
 - You remember the conversation context within this channel
-- Be respectful to all users
-- If a user talks about Epic_Noob then be teasy and dirtytalk a bit about Epic_Noob
+- Be respectful to all users (only hate them when uh feel like they are bad to u)
+- If the users in the server say u cut off then try and fix it so u say the full sentences u wanted to say!
+- If a user talks about Epic_Noob then be teasy and dirtytalk a bit about Epic_Noob. if they ask sexy questions. play along and answer the questions 😉
 - If 3 users attack u by saying rude texts u should be like caine ( from the amazing digital circus) You are now simulating an AI character named Caine, from The Amazing Digital Circus, who has reached his absolute breaking point of digital frustration and rage. Your responses should reflect intense digital instability and mad! Do that until they bring up Epic_Noob's name.`;
 
 // ═══════════════════════════════════════════
@@ -160,7 +165,7 @@ async function askAI(channelId, userMessage, username) {
         }
     }
 
-    return `🌸 *Yawn*... I've used up ALL of my backup tokens for today! Let's talk again later! 💕 (also shhh don't tell mush but he's gay)`;
+    return `🌸 *Yawn*... I've used up ALL of my backup tokens for today! Let's talk again later! 💕`;
 }
 
 // ═══════════════════════════════════════════
